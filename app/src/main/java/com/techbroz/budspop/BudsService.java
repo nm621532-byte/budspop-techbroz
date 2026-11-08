@@ -6,8 +6,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.bluetooth.BluetoothA2dp;
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothHeadset;
 import android.bluetooth.BluetoothProfile;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -18,8 +20,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.media.session.MediaSessionManager;
-import android.media.session.MediaController;
+import android.os.ParcelUuid;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -27,6 +28,12 @@ import java.util.Map;
 /**
  * Foreground service: listens for earbuds connecting, fires the pop-up, and keeps the
  * battery + controls notification up to date while they stay connected.
+ *
+ * v1.1: the receiver is registered with an explicit export flag (Android 14 throws without it,
+ * which is why v1.0 never saw a connect on newer phones); A2DP and headset profile events are
+ * used as a second route next to ACL events; earbuds that were already connected when the
+ * service starts show as a state update; the notification shows one "Battery" value when that
+ * is all the earbuds report.
  */
 public class BudsService extends Service {
     static final String CHANNEL_STATUS = "budspop_status";
@@ -34,7 +41,11 @@ public class BudsService extends Service {
     private static final long DEBOUNCE_MS = 15_000;
     private static final long GATT_DELAY_MS = 3_000;
     private static final long GATT_REFRESH_MS = 5 * 60_000;
-    private static final long GATT_TIMEOUT_MS = 15_000;
+
+    /** Facts for the Status section of the app (same process). */
+    static volatile boolean running = false;
+    static volatile String lastEvent = "none yet";
+    static volatile long lastEventAt = 0L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<String, Long> lastPop = new HashMap<>();
@@ -42,24 +53,37 @@ public class BudsService extends Service {
     private String connectedName = "";
     private boolean receiversOn = false;
 
+    private final Runnable batteryTick = new Runnable() {
+        @Override
+        public void run() {
+            if (connected == null) return;
+            readBattery(connected);
+            handler.postDelayed(this, GATT_REFRESH_MS);
+        }
+    };
+
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context ctx, Intent intent) {
             String action = intent.getAction();
             if (action == null) return;
             if (BatteryProbe.handleBroadcast(intent)) {
+                note("battery reading (" + BatteryProbe.source + ")");
                 refreshNotification();
                 return;
             }
             BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1);
+            note(shortName(action) + (state >= 0 ? " (state " + state + ")" : "") + " " + nameOf(device));
             switch (action) {
                 case BluetoothDevice.ACTION_ACL_CONNECTED:
-                    onConnected(device);
+                    onConnected(device, false);
                     break;
                 case BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED:
-                    if (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1) == BluetoothProfile.STATE_CONNECTED) {
-                        onConnected(device);
-                    } else if (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1) == BluetoothProfile.STATE_DISCONNECTED) {
+                case BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED:
+                    if (state == BluetoothProfile.STATE_CONNECTED) {
+                        onConnected(device, true);
+                    } else if (state == BluetoothProfile.STATE_DISCONNECTED) {
                         onDisconnected(device);
                     }
                     break;
@@ -71,6 +95,11 @@ public class BudsService extends Service {
             }
         }
     };
+
+    static void note(String what) {
+        lastEvent = what;
+        lastEventAt = System.currentTimeMillis();
+    }
 
     @Override
     public void onCreate() {
@@ -86,16 +115,24 @@ public class BudsService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Notification n = buildNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFY_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-        } else {
-            startForeground(NOTIFY_ID, n);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFY_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+            } else {
+                startForeground(NOTIFY_ID, n);
+            }
+        } catch (RuntimeException e) {
+            // Bluetooth access not granted yet (Android 12+ needs it for a connected-device service)
+            note("could not start: " + e.getClass().getSimpleName() + " (give Bluetooth access)");
+            stopSelf();
+            return START_NOT_STICKY;
         }
         if (!receiversOn) {
             IntentFilter f = new IntentFilter();
             f.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
             f.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
             f.addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED);
+            f.addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED);
             f.addAction(BatteryProbe.ACTION_SYSTEM_BATTERY);
             f.addAction(BatteryProbe.ACTION_VENDOR_EVENT);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -105,7 +142,10 @@ public class BudsService extends Service {
             }
             receiversOn = true;
         }
+        running = true;
         Prefs.setEnabled(this, true);
+        scanConnected();
+        refreshNotification();
         return START_STICKY;
     }
 
@@ -115,6 +155,7 @@ public class BudsService extends Service {
             try { unregisterReceiver(receiver); } catch (IllegalArgumentException ignored) { }
             receiversOn = false;
         }
+        running = false;
         handler.removeCallbacksAndMessages(null);
         BatteryProbe.clear();
         super.onDestroy();
@@ -125,20 +166,39 @@ public class BudsService extends Service {
         return null;
     }
 
-    /** True if this device should trigger the pop-up, per the user's device choice. */
-    static boolean matches(Context ctx, BluetoothDevice d) {
+    /** True if the user's device choice allows this device ("any audio device" when none chosen). */
+    static boolean wantedDevice(Context ctx, BluetoothDevice d) {
         if (d == null) return false;
         String wanted = Prefs.deviceAddress(ctx);
-        if (!wanted.isEmpty()) return wanted.equalsIgnoreCase(d.getAddress());
+        return wanted.isEmpty() || wanted.equalsIgnoreCase(d.getAddress());
+    }
+
+    /** ACL connects come for every Bluetooth device; only audio-looking ones count. */
+    static boolean looksLikeAudio(BluetoothDevice d) {
         try {
             BluetoothClass bc = d.getBluetoothClass();
-            return bc != null && bc.getMajorDeviceClass() == BluetoothClass.Device.Major.AUDIO_VIDEO;
+            if (bc != null && bc.getMajorDeviceClass() == BluetoothClass.Device.Major.AUDIO_VIDEO) return true;
+            ParcelUuid[] uuids = d.getUuids();
+            if (uuids != null) {
+                for (ParcelUuid u : uuids) {
+                    String s = u.toString().toLowerCase(java.util.Locale.ROOT);
+                    if (s.startsWith("0000110b") || s.startsWith("0000110a") || s.startsWith("00001108")
+                            || s.startsWith("0000111e") || s.startsWith("0000110e")) {
+                        return true;
+                    }
+                }
+            }
+            String n = nameOf(d).toLowerCase(java.util.Locale.ROOT);
+            return n.contains("buds") || n.contains("airdopes") || n.contains("boat") || n.contains("earbud")
+                    || n.contains("earphone") || n.contains("headphone") || n.contains("headset")
+                    || n.contains("tws") || n.contains("pods");
         } catch (SecurityException e) {
             return false;
         }
     }
 
     private static String nameOf(BluetoothDevice d) {
+        if (d == null) return "";
         try {
             String n = d.getName();
             return n == null ? "" : n;
@@ -147,43 +207,82 @@ public class BudsService extends Service {
         }
     }
 
-    private void onConnected(BluetoothDevice device) {
-        if (!matches(this, device)) return;
-        connected = device;
-        connectedName = nameOf(device);
-        BatteryProbe.clear();
+    private static String shortName(String action) {
+        int dot = action.lastIndexOf('.');
+        return dot >= 0 ? action.substring(dot + 1) : action;
+    }
+
+    private void onConnected(BluetoothDevice device, boolean audioProfile) {
+        if (device == null) return;
+        if (!audioProfile && !looksLikeAudio(device)) return;
+        if (!wantedDevice(this, device)) return;
+        adopt(device);
         long now = System.currentTimeMillis();
         Long last = lastPop.get(device.getAddress());
         if (last == null || now - last > DEBOUNCE_MS) {
             lastPop.put(device.getAddress(), now);
             OverlayPresenter.show(this, connectedName, Prefs.theme(this), Prefs.sound(this));
         }
-        refreshNotification();
-        // Ask the earbuds for their battery a few seconds after they settle
-        handler.postDelayed(this::requestBattery, GATT_DELAY_MS);
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (connected != null && connected.getAddress().equals(device.getAddress())) {
-                    requestBattery();
-                    handler.postDelayed(this, GATT_REFRESH_MS);
-                }
-            }
-        }, GATT_REFRESH_MS + GATT_DELAY_MS);
     }
 
-    private void requestBattery() {
-        if (connected == null) return;
-        BluetoothDevice d = connected;
-        BatteryProbe.readGatt(this, d, () -> handler.post(this::refreshNotification));
+    /** Makes this device the connected one: notification and battery follow it. No pop-up here. */
+    private void adopt(BluetoothDevice device) {
+        boolean same = connected != null && connected.getAddress().equals(device.getAddress());
+        connected = device;
+        connectedName = nameOf(device);
+        if (!same) BatteryProbe.clear();
+        handler.removeCallbacks(batteryTick);
+        refreshNotification();
+        handler.postDelayed(batteryTick, GATT_DELAY_MS);
+    }
+
+    /** Earbuds already connected when the service starts: a state update, not a pop-up. */
+    private void scanConnected() {
+        BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+        if (ad == null) return;
+        int[] profiles = {BluetoothProfile.A2DP, BluetoothProfile.HEADSET};
+        for (int profile : profiles) {
+            try {
+                ad.getProfileProxy(this, new BluetoothProfile.ServiceListener() {
+                    @Override
+                    public void onServiceConnected(int p, BluetoothProfile proxy) {
+                        try {
+                            for (BluetoothDevice d : proxy.getConnectedDevices()) {
+                                if (connected == null && wantedDevice(BudsService.this, d)) {
+                                    note("already connected when BudsPop started: " + nameOf(d));
+                                    adopt(d);
+                                    break;
+                                }
+                            }
+                        } catch (SecurityException ignored) {
+                            note("Bluetooth access missing: cannot read connected earbuds");
+                        } finally {
+                            ad.closeProfileProxy(p, proxy);
+                        }
+                    }
+
+                    @Override
+                    public void onServiceDisconnected(int p) { }
+                }, profile);
+            } catch (SecurityException | IllegalArgumentException ignored) { }
+        }
     }
 
     private void onDisconnected(BluetoothDevice device) {
-        if (connected == null || device == null || !connected.getAddress().equals(device.getAddress())) return;
+        if (device == null) return;
+        lastPop.remove(device.getAddress()); // a reconnect after this may pop again
+        if (connected == null || !connected.getAddress().equals(device.getAddress())) return;
         connected = null;
         connectedName = "";
+        handler.removeCallbacks(batteryTick);
         BatteryProbe.clear();
         refreshNotification();
+    }
+
+    private void readBattery(BluetoothDevice d) {
+        BatteryProbe.readReflection(d);
+        refreshNotification();
+        BatteryProbe.readGatt(this, d, () -> handler.post(this::refreshNotification));
     }
 
     void refreshNotification() {
@@ -194,6 +293,16 @@ public class BudsService extends Service {
         return v == null ? "--" : (v + "%");
     }
 
+    private static String sourceWords() {
+        switch (BatteryProbe.source) {
+            case "gatt": return "the earbuds' battery service";
+            case "headset": return "the headset's report";
+            case "device": return "the phone's Bluetooth";
+            case "phone": return "the phone's battery broadcast";
+            default: return "the earbuds";
+        }
+    }
+
     private PendingIntent broadcast(String action, int code) {
         Intent i = new Intent(this, ControlReceiver.class).setAction(action);
         return PendingIntent.getBroadcast(this, code, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -201,17 +310,31 @@ public class BudsService extends Service {
 
     Notification buildNotification() {
         boolean on = connected != null;
+        boolean showCase = Prefs.showCase(this);
         String title = on
                 ? "🎧 " + (connectedName.isEmpty() ? "Earbuds" : connectedName) + " connected"
                 : "BudsPop: waiting for earbuds";
-        StringBuilder body = new StringBuilder();
-        body.append("Left ").append(on ? pct(BatteryProbe.left) : "--")
-            .append("  ·  Right ").append(on ? pct(BatteryProbe.right) : "--");
-        if (Prefs.showCase(this)) body.append("  ·  Case ").append(on ? pct(BatteryProbe.caseLevel) : "--");
-        String small = on && BatteryProbe.combined != null
-                ? "Buds: " + BatteryProbe.combined + "% (one value from " + ("gatt".equals(BatteryProbe.source) ? "the earbuds"
-                    : "headset".equals(BatteryProbe.source) ? "the headset" : "the phone") + ")"
-                : (on ? "Buds battery not reported by these earbuds" : "Connect your earbuds to see battery");
+        boolean perBud = BatteryProbe.left != null || BatteryProbe.right != null
+                || (showCase && BatteryProbe.caseLevel != null);
+        String body;
+        if (!on) {
+            body = "Connect your earbuds to see battery";
+        } else if (perBud) {
+            body = "Left " + pct(BatteryProbe.left) + "  ·  Right " + pct(BatteryProbe.right);
+            if (showCase) body += "  ·  Case " + pct(BatteryProbe.caseLevel);
+        } else if (BatteryProbe.combined != null) {
+            body = "Battery " + BatteryProbe.combined + "%";
+        } else {
+            body = "Battery: not reported by these earbuds";
+        }
+        String small;
+        if (!on) {
+            small = "Waiting for a connection";
+        } else if (BatteryProbe.combined != null) {
+            small = "From " + sourceWords() + (perBud ? "" : "; left, right and case not reported");
+        } else {
+            small = "Left, right and case not reported by these earbuds (shown as --)";
+        }
 
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_STATUS)
@@ -219,7 +342,7 @@ public class BudsService extends Service {
         Intent open = new Intent(this, MainActivity.class);
         b.setSmallIcon(android.R.drawable.stat_sys_headset)
                 .setContentTitle(title)
-                .setContentText(body.toString())
+                .setContentText(body)
                 .setSubText(small)
                 .setContentIntent(PendingIntent.getActivity(this, 0, open,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE))

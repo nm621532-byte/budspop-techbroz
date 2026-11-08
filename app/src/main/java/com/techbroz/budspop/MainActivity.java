@@ -13,7 +13,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.database.Cursor;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -31,6 +35,7 @@ import java.util.Set;
  */
 public class MainActivity extends Activity {
     private static final int REQ_PERMS = 42;
+    private static final int REQ_PICK_MEDIA = 77;
 
     private LinearLayout root;
     private TextView statusLine;
@@ -50,7 +55,20 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        ensureRunning();
         render();
+    }
+
+    /** Starts the service when the app is opened, unless the user pressed Stop. */
+    private void ensureRunning() {
+        if (Prefs.userStopped(this) || BudsService.running || needsBtPerm()) return;
+        try {
+            Intent i = new Intent(this, BudsService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+            else startService(i);
+        } catch (RuntimeException ignored) {
+            // the status section says what is missing
+        }
     }
 
     private int dp(int v) {
@@ -101,7 +119,20 @@ public class MainActivity extends Activity {
             render();
         });
 
-        addHeader("4. Test");
+        addButton("Pick my GIF / video for the pop-up", this::pickMedia);
+        String chosen = Prefs.mediaName(this);
+        addText("My Animation plays your own file: "
+                + (chosen.isEmpty() ? "none chosen yet (until then, Saiyan Rush plays)" : chosen), 12, false, 0xFF555555);
+        addButton("My Animation sound: " + (Prefs.mediaSound(this) ? "On" : "Off"), () -> {
+            Prefs.setMediaSound(this, !Prefs.mediaSound(this));
+            render();
+        });
+
+        addHeader("4. Status");
+        renderStatus();
+        addButton("Refresh status", () -> render());
+
+        addHeader("5. Test");
         addButton("Test pop-up", () -> {
             if (!Settings.canDrawOverlays(this)) {
                 Toast.makeText(this, "Overlay permission off: showing as a notification instead", Toast.LENGTH_SHORT).show();
@@ -205,6 +236,7 @@ public class MainActivity extends Activity {
 
     private void toggleService(boolean start) {
         if (start) {
+            Prefs.setUserStopped(this, false);
             if (needsBtPerm()) { requestBt(); return; }
             try {
                 Intent i = new Intent(this, BudsService.class);
@@ -217,6 +249,7 @@ public class MainActivity extends Activity {
         } else {
             stopService(new Intent(this, BudsService.class));
             Prefs.setEnabled(this, false);
+            Prefs.setUserStopped(this, true);
         }
         render();
     }
@@ -248,5 +281,72 @@ public class MainActivity extends Activity {
                     render();
                 })
                 .show();
+    }
+
+    private void renderStatus() {
+        addText("Service running: " + (BudsService.running ? "yes" : "no")
+                + (Prefs.userStopped(this) ? " (stopped by you)" : ""), 13, false, 0xFF333333);
+        addText("Bluetooth access: " + (needsBtPerm() ? "MISSING (allow it in step 1)" : "granted"), 13, false, 0xFF333333);
+        addText("Notifications: " + (needsNotifPerm() ? "MISSING" : "granted"), 13, false, 0xFF333333);
+        addText("Show over other apps: " + (Settings.canDrawOverlays(this)
+                ? "granted"
+                : "MISSING (you get a notification and a toast instead of the full pop-up)"), 13, false, 0xFF333333);
+        addText("Battery exemption: " + (isIgnoringBattery() ? "granted" : "not granted"), 13, false, 0xFF333333);
+        addText("Last Bluetooth event: " + BudsService.lastEvent
+                + (BudsService.lastEventAt > 0 ? " at " + new SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new Date(BudsService.lastEventAt)) : ""),
+                13, false, 0xFF333333);
+        addText("Last battery reading source: " + (BatteryProbe.source.isEmpty() ? "none yet" : BatteryProbe.source), 13, false, 0xFF333333);
+        String battery;
+        if (BatteryProbe.left == null && BatteryProbe.right == null && BatteryProbe.caseLevel == null && BatteryProbe.combined == null) {
+            battery = "not reported yet";
+        } else {
+            battery = (BatteryProbe.combined != null ? "Battery " + BatteryProbe.combined + "%  " : "")
+                    + "Left " + (BatteryProbe.left == null ? "--" : BatteryProbe.left + "%")
+                    + "  Right " + (BatteryProbe.right == null ? "--" : BatteryProbe.right + "%")
+                    + "  Case " + (BatteryProbe.caseLevel == null ? "--" : BatteryProbe.caseLevel + "%");
+        }
+        addText("Battery now: " + battery, 13, false, 0xFF333333);
+    }
+
+    private void pickMedia() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"image/gif", "image/*", "video/*"});
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(i, REQ_PICK_MEDIA);
+        } catch (RuntimeException e) {
+            Toast.makeText(this, "No file picker found on this phone", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_PICK_MEDIA || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri u = data.getData();
+        try {
+            getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (SecurityException ignored) {
+            // this file's app did not allow a lasting grant; it works until the phone restarts
+        }
+        String mime = getContentResolver().getType(u);
+        String name = displayName(u);
+        Prefs.setMedia(this, u.toString(), mime == null ? "" : mime, name);
+        Prefs.setTheme(this, BudsScene.THEME_MY_ANIMATION);
+        Toast.makeText(this, "Saved. Theme set to My Animation.", Toast.LENGTH_SHORT).show();
+        render();
+    }
+
+    private String displayName(Uri u) {
+        try (Cursor c = getContentResolver().query(u, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String n = c.getString(0);
+                if (n != null && !n.isEmpty()) return n;
+            }
+        } catch (RuntimeException ignored) { }
+        String last = u.getLastPathSegment();
+        return last == null ? "my file" : last;
     }
 }

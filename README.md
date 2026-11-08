@@ -1,5 +1,43 @@
 # BudsPop 🎧
 
+**v1.1** — ab connect animation **fighting-anime** style mein hai (Dragon Ball jaisa feel, lekin sab kuch original hai).
+
+## v1.1 mein kya naya hai
+- **Naye themes** (default ab **Saiyan Rush**):
+  - **Saiyan Rush**: hamara apna spiky-hair fighter power-up karta hai (golden aura, ground crack, speed lines), energy blast earbuds par lagta hai, phir **BUDS CONNECTED!** impact text aur device ka naam.
+  - **Clash**: do original fighters dash karte hain, beams takraate hain, flash, aur earbuds nikalte hain.
+  - **Super Charge**: energy ball charge hota hai, phir burst aur shockwave.
+  - **My Animation (own GIF/video)**: apni koi bhi GIF, photo ya chhoti video pop-up mein chalao (niche dekhein).
+  - Purane **Sakura / Neon Night / Sunny** themes bhi chune ja sakte hain.
+- **Power-up vibration** (fight themes par), sound/vibration toggle wahi hai.
+- **Bug fix (Noor ke phone par pop-up nahi aa raha tha)**: Android 14 par app ka Bluetooth receiver bina "export" flag ke register ho raha tha, isliye connect events service tak nahi pahunchte the. Ab sahi flag laga hai. Saath mein: A2DP aur headset dono profile events sunta hai, app khulte hi service apne aap chalu hoti hai (Stop dabane tak), aur jo buds pehle se connected hain unhe bhi state mein dikhata hai.
+- **Notification battery**: agar buds sirf ek overall battery number bhejte hain to notification mein seedha **"Battery 85%"** dikhta hai, teen "--" nahin. Left / Right / Case tabhi dikhega jab buds wo exact value bhejein. Koi number invent nahi hota.
+- **Status screen** (app ke andar, step 4): service chal rahi hai ya nahi, kaun si permission missing hai, aakhri Bluetooth event kab aaya, aur battery kis source se aayi.
+
+## My Animation kaise lagaayein
+1. Phone pe koi bhi GIF, photo ya chhoti video download karo (jo aapko pasand ho).
+2. BudsPop kholo → **Settings** → **"Pick my GIF / video for the pop-up"** dabao, file chuno.
+3. Theme apne aap "My Animation" ho jaayegi. Chahen to **"My Animation sound"** On karo (video ki awaaz tabhi chalegi).
+4. Pop-up 4 seconds tak chalta hai aur upar **BUDS CONNECTED!** + device ka naam aata hai.
+- File na chuni ho to Saiyan Rush chalta hai. GIF/photo ke liye Android 9 ya naya chahiye.
+- Agar phone restart ke baad file na chale, to dobara chuno.
+- BudsPop ka koi bhi anime/Dragon Ball material nahi hai. Jo bhi animation dikhana ho, wo aapki apni file se aayegi.
+
+## Install (v1.1)
+1. Release page se `BudsPop-v1.1.apk` download karo (Android 8.0+).
+2. File kholo, "Install" dabao (unknown source allow karna padega).
+3. App kholo. Setup steps (Bluetooth, Notifications, Show over other apps, Battery) ek baar karo. Status screen se check kar lo ki sab "granted" hai.
+4. Start dabao, phir buds connect karo.
+
+**Honest note:** v1.1 ko emulator ya asli phone par test NAHI kiya gaya (is box par emulator nahi chalta). Pop-up, notification battery aur Bluetooth events ka asli behaviour phone par confirm karna baaki hai. Koi bhi problem aaye to status screen ka screenshot bhejo.
+
+## Version history
+- v1.1: fight-anime themes, My Animation, Android 14 receiver fix, battery label fix, Status screen.
+- v1.0: pehla release (Sakura, Neon Night, Sunny; battery notification; controls).
+
+---
+
+
 Earbuds connect hote hi ek **anime-style pop-up** (chibi character, buds snap in, "Buds Connected!"), aur notification bar mein **battery (left / right / case) + play/pause/next + volume**.
 
 Original artwork, drawn in code. Koi boAt trademark ya asset nahi hai. Ye ek **sideload APK** hai (Android 8.0+), Play Store ke liye nahi.
@@ -17,7 +55,7 @@ Original artwork, drawn in code. Koi boAt trademark ya asset nahi hai. Ye ek **s
 5. **Media controls access**: BudsPop ko Notification access do. Isse notification ke Play/Pause/Next us player par jaate hain jo abhi chal raha hai. Ye optional hai.
 6. **Start BudsPop** dabao. Ab earbuds connect karo.
 
-Settings mein theme (Sakura / Neon Night / Sunny) badal sakte ho, kaun sa device trigger kare (default: koi bhi audio device), sound/vibration on/off, aur case battery dikhana ya nahi. **Test pop-up** button se bina earbuds ke bhi animation dekh sakte ho.
+Settings mein theme (Saiyan Rush / Clash / Super Charge / My Animation / Sakura / Neon Night / Sunny) badal sakte ho, kaun sa device trigger kare (default: koi bhi audio device), sound/vibration on/off, aur case battery dikhana ya nahi. **Test pop-up** button se bina earbuds ke bhi animation dekh sakte ho.
 
 ## Battery: ईमानदारी wali baat (honest limits)
 - Android normally **ek hi battery number** deta hai headset ke liye, left/right/case alag nahi.
@@ -41,7 +79,8 @@ Settings mein theme (Sakura / Neon Night / Sunny) badal sakte ho, kaun sa device
 - `BudsScene.java` ka animation Canvas primitives se bana hai, isliye ek chhota desktop renderer bhi isi file ko chala ke frames bana sakta hai (preview.mp4 isi tarah bana).
 
 ## Testing status
-- Build: pass (debug APK, 32 KB). Manifest permissions aapt se check kiye.
+- v1.1 build: `assembleDebug` pass, aapt badging (SDK 26 min, target 34), apksigner v2 verify pass.
+- v1.0 build: pass (debug APK, 32 KB).
 - **Asli phone pe test nahi hua.** Is box pe KVM nahi hai to emulator bhi nahi chala. Bluetooth event aur overlay behavior phone pe confirm karna baaki hai. Agar kuch na chale to batana, fix karenge.
 
 ## Permissions (kyun)

@@ -85,6 +85,26 @@ final class BatteryProbe {
         return false;
     }
 
+    /**
+     * Route 0: the phone's own hidden BluetoothDevice.getBatteryLevel(), where the phone exposes it.
+     * It is one overall number; left, right and case stay as they were.
+     */
+    static void readReflection(android.bluetooth.BluetoothDevice d) {
+        try {
+            java.lang.reflect.Method m = BluetoothDevice.class.getMethod("getBatteryLevel");
+            Object v = m.invoke(d);
+            if (v instanceof Integer) {
+                int level = (Integer) v;
+                if (level >= 0 && level <= 100) {
+                    combined = level;
+                    source = "device";
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            // this phone does not expose it to apps
+        }
+    }
+
     /** Reads the standard Battery Service over BLE, if the earbuds expose one. */
     static void readGatt(Context ctx, BluetoothDevice device, Runnable onDone) {
         try {

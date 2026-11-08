@@ -20,16 +20,19 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Toast;
 
 /**
  * Shows the full-width "Buds Connected!" pop-up as an overlay window. If the overlay
- * permission is missing, it falls back to a heads-up notification with the same words.
+ * permission is missing, it falls back to a heads-up notification plus a toast.
  */
 final class OverlayPresenter {
     static final String CHANNEL_ALERTS = "buds_pop_alerts";
     private static final int NOTIFY_ID_POP = 2001;
+    private static final long MEDIA_MS = 4000;
     private static final Handler UI = new Handler(Looper.getMainLooper());
     private static View current;
+    private static long showId;
 
     private OverlayPresenter() {}
 
@@ -37,18 +40,19 @@ final class OverlayPresenter {
         UI.post(() -> {
             if (sound) chime(ctx);
             if (Settings.canDrawOverlays(ctx)) {
-                showOverlay(ctx, device, theme);
+                showOverlay(ctx, device, theme, sound);
             } else {
                 showHeadsUp(ctx, device);
             }
         });
     }
 
-    private static void showOverlay(Context ctx, String device, int theme) {
+    private static void showOverlay(Context ctx, String device, int theme, boolean sound) {
         WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
-        if (wm == null) { showHeadsUp(ctx, device); return; }
-        if (current != null) removeCurrent(wm);
-
+        if (wm == null) {
+            showHeadsUp(ctx, device);
+            return;
+        }
         DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
         int width = dm.widthPixels;
         int height = Math.round(width * 0.5f); // the scene is 2:1
@@ -64,8 +68,30 @@ final class OverlayPresenter {
         lp.gravity = Gravity.TOP;
         lp.y = Math.round(dm.heightPixels * 0.08f);
 
-        View view = new BudsPopView(ctx, theme, device);
+        View view;
+        long lifeMs = BudsScene.DURATION_MS;
+        if (theme == BudsScene.THEME_MY_ANIMATION && !Prefs.mediaUri(ctx).isEmpty()) {
+            MediaPopView media = new MediaPopView(ctx, Prefs.mediaUri(ctx), Prefs.mediaMime(ctx),
+                    Prefs.mediaSound(ctx), device,
+                    () -> UI.post(() -> {
+                        // the file could not play: show the built-in animation instead
+                        removeCurrent(wm);
+                        showOverlay(ctx, device, BudsScene.THEME_SAIYAN_RUSH, sound);
+                    }));
+            if (media.usable()) {
+                view = media;
+                lifeMs = MEDIA_MS;
+            } else {
+                view = new BudsPopView(ctx, BudsScene.THEME_SAIYAN_RUSH, device);
+            }
+        } else {
+            int drawTheme = theme == BudsScene.THEME_MY_ANIMATION ? BudsScene.THEME_SAIYAN_RUSH : theme;
+            view = new BudsPopView(ctx, drawTheme, device);
+        }
         view.setOnClickListener(v -> removeCurrent(wm));
+
+        removeCurrent(wm); // a pop-up still on screen gives way to the new one
+        long id = ++showId;
         try {
             wm.addView(view, lp);
         } catch (RuntimeException e) {
@@ -73,17 +99,25 @@ final class OverlayPresenter {
             return;
         }
         current = view;
-        UI.postDelayed(() -> removeCurrent(wm), BudsScene.DURATION_MS);
-        vibrate(ctx);
+        UI.postDelayed(() -> {
+            if (showId == id) removeCurrent(wm);
+        }, lifeMs);
+        if (sound) vibrate(ctx, theme);
     }
 
     private static void removeCurrent(WindowManager wm) {
         if (current == null) return;
-        try { wm.removeView(current); } catch (RuntimeException ignored) { }
+        if (current instanceof MediaPopView) ((MediaPopView) current).release();
+        try {
+            wm.removeView(current);
+        } catch (RuntimeException ignored) { }
         current = null;
     }
 
     private static void showHeadsUp(Context ctx, String device) {
+        UI.post(() -> Toast.makeText(ctx,
+                "Buds connected. Allow BudsPop \"Show over other apps\" for the full pop-up.",
+                Toast.LENGTH_LONG).show());
         NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -115,11 +149,18 @@ final class OverlayPresenter {
         } catch (RuntimeException ignored) { }
     }
 
-    private static void vibrate(Context ctx) {
+    /** Fight themes get a rising power-up pattern; the others a single short buzz. */
+    private static void vibrate(Context ctx, int theme) {
         Vibrator v = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
         if (v == null || !v.hasVibrator()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            v.vibrate(VibrationEffect.createOneShot(35, VibrationEffect.DEFAULT_AMPLITUDE));
+            if (theme >= BudsScene.THEME_SAIYAN_RUSH) {
+                long[] timings = {0, 70, 50, 90, 40, 130, 60, 300};
+                int[] amplitudes = {0, 60, 0, 120, 0, 180, 0, 255};
+                v.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1));
+            } else {
+                v.vibrate(VibrationEffect.createOneShot(35, VibrationEffect.DEFAULT_AMPLITUDE));
+            }
         } else {
             v.vibrate(35);
         }

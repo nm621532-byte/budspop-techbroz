@@ -16,7 +16,12 @@ public final class BudsScene {
     public static final int THEME_SAKURA = 0;
     public static final int THEME_NEON = 1;
     public static final int THEME_SUNNY = 2;
-    public static final String[] THEME_NAMES = {"Sakura", "Neon Night", "Sunny"};
+    public static final int THEME_SAIYAN_RUSH = 3;   // v1.1 default: original spiky-hair fighter, power-up, blast
+    public static final int THEME_CLASH = 4;         // v1.1: two original fighters, beam clash
+    public static final int THEME_SUPER_CHARGE = 5;  // v1.1: energy ball charges, then bursts
+    public static final int THEME_MY_ANIMATION = 6;  // v1.1: the user's own GIF / picture / video
+    public static final String[] THEME_NAMES = {"Sakura", "Neon Night", "Sunny",
+            "Saiyan Rush", "Clash", "Super Charge", "My Animation (own GIF/video)"};
 
     /** Length of the whole animation; the overlay closes after roughly this (the auto-dismiss is 3 s). */
     public static final long DURATION_MS = 3000;
@@ -60,6 +65,13 @@ public final class BudsScene {
         c.save();
         c.translate(ox, oy);
         c.scale(s, s);
+
+        if (theme >= THEME_SAIYAN_RUSH) {
+            // fight-anime themes live in BudsFight; "My Animation" falls back to Saiyan Rush here
+            BudsFight.draw(c, t, theme, device);
+            c.restore();
+            return;
+        }
 
         int bgTop, bgBottom, accent, ink, hair;
         switch (theme) {
