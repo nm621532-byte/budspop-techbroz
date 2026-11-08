@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- chibi face with one earbud: original artwork -->
+    <path android:fillColor="#FF4A2A55" android:pathData="M54,22 a30,30 0 1,0 0.01,0 z" />
+    <path android:fillColor="#FFFFE2CC" android:pathData="M54,36 a24,24 0 1,0 0.01,0 z" />
+    <path android:fillColor="#FF3B1F33" android:pathData="M44,52 a3,4 0 1,0 0.01,0 z M64,52 a3,4 0 1,0 0.01,0 z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M28,62 a5,6 0 1,0 0.01,0 z" />
+    <path android:fillColor="#FF2ECC71" android:pathData="M74,30 a8,8 0 1,0 0.01,0 z" />
+</vector>
